@@ -111,6 +111,8 @@ type ServerConfig struct {
 	// attempts.
 	AuthLogCallback func(conn ConnMetadata, method string, err error)
 
+	MethodFilter func(conn ConnMetadata, methods []string) []string
+
 	// ServerVersion is the version identification string to announce in
 	// the public handshake.
 	// If empty, a reasonable default is used.
@@ -394,6 +396,10 @@ func (l ServerAuthError) Error() string {
 // 'none' authentication to discover available methods.
 // It is returned in ServerAuthError.Errors from NewServerConn.
 var ErrNoAuth = errors.New("ssh: no auth passed yet")
+
+var (
+	PartialSuccess = errors.New("partial success")
+)
 
 func (s *connection) serverAuthenticate(config *ServerConfig) (*Permissions, error) {
 	sessionID := s.transport.getSessionID()
@@ -683,8 +689,16 @@ userAuthLoop:
 			failureMsg.Methods = append(failureMsg.Methods, "gssapi-with-mic")
 		}
 
+		if config.MethodFilter != nil {
+			failureMsg.Methods = config.MethodFilter(s, failureMsg.Methods)
+		}
+
 		if len(failureMsg.Methods) == 0 {
 			return nil, errors.New("ssh: no authentication methods configured but NoClientAuth is also false")
+		}
+
+		if authErr == PartialSuccess {
+			failureMsg.PartialSuccess = true
 		}
 
 		if err := s.transport.writePacket(Marshal(&failureMsg)); err != nil {
