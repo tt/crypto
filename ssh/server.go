@@ -531,10 +531,13 @@ userAuthLoop:
 				candidate.user = s.user
 				candidate.pubKeyData = pubKeyData
 				candidate.perms, candidate.result = config.PublicKeyCallback(s, pubKey)
-				if candidate.result == nil && candidate.perms != nil && candidate.perms.CriticalOptions != nil && candidate.perms.CriticalOptions[sourceAddressCriticalOption] != "" {
+				if (candidate.result == nil || candidate.result == PartialSuccess) && candidate.perms != nil && candidate.perms.CriticalOptions != nil && candidate.perms.CriticalOptions[sourceAddressCriticalOption] != "" {
 					candidate.result = checkSourceAddress(
 						s.RemoteAddr(),
 						candidate.perms.CriticalOptions[sourceAddressCriticalOption])
+					if err != nil {
+						candidate.result = err
+					}
 				}
 				cache.add(candidate)
 			}
@@ -547,7 +550,7 @@ userAuthLoop:
 					return nil, parseError(msgUserAuthRequest)
 				}
 
-				if candidate.result == nil {
+				if candidate.result == nil || candidate.result == PartialSuccess {
 					okMsg := userAuthPubKeyOkMsg{
 						Algo:   algo,
 						PubKey: pubKeyData,
