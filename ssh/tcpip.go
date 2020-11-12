@@ -16,6 +16,21 @@ import (
 	"time"
 )
 
+type tcpAddr struct {
+	Host string
+	Port int
+}
+
+func (a *tcpAddr) Network() string { return "tcp" }
+
+func (a *tcpAddr) String() string {
+	if a == nil {
+		return "<nil>"
+	}
+
+	return net.JoinHostPort(a.Host, strconv.Itoa(a.Port))
+}
+
 // Listen requests the remote peer open a listening socket on
 // addr. Incoming connections will be available by calling Accept on
 // the returned net.Listener. The listener must be serviced, or the
@@ -24,6 +39,17 @@ import (
 func (c *Client) Listen(n, addr string) (net.Listener, error) {
 	switch n {
 	case "tcp", "tcp4", "tcp6":
+		host, portS, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		if net.ParseIP(host) == nil {
+			port, err := strconv.Atoi(portS)
+			if err != nil {
+				return nil, err
+			}
+			return c.ListenTCP(&tcpAddr{host, port})
+		}
 		laddr, err := net.ResolveTCPAddr(n, addr)
 		if err != nil {
 			return nil, err
@@ -101,15 +127,24 @@ func (c *Client) handleForwards() {
 // ListenTCP requests the remote peer open a listening socket
 // on laddr. Incoming connections will be available by calling
 // Accept on the returned net.Listener.
-func (c *Client) ListenTCP(laddr *net.TCPAddr) (net.Listener, error) {
+func (c *Client) ListenTCP(addr net.Addr) (net.Listener, error) {
+	addrS, portS, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return nil, err
+	}
+	port, err := strconv.Atoi(portS)
+	if err != nil {
+		return nil, err
+	}
 	c.handleForwardsOnce.Do(c.handleForwards)
-	if laddr.Port == 0 && isBrokenOpenSSHVersion(string(c.ServerVersion())) {
+	if port == 0 && isBrokenOpenSSHVersion(string(c.ServerVersion())) {
+		laddr := &net.TCPAddr{Port: port}
 		return c.autoPortListenWorkaround(laddr)
 	}
 
 	m := channelForwardMsg{
-		laddr.IP.String(),
-		uint32(laddr.Port),
+		addrS,
+		uint32(port),
 	}
 	// send message
 	ok, resp, err := c.SendRequest("tcpip-forward", true, Marshal(&m))
@@ -122,20 +157,20 @@ func (c *Client) ListenTCP(laddr *net.TCPAddr) (net.Listener, error) {
 
 	// If the original port was 0, then the remote side will
 	// supply a real port number in the response.
-	if laddr.Port == 0 {
+	if port == 0 {
 		var p struct {
 			Port uint32
 		}
 		if err := Unmarshal(resp, &p); err != nil {
 			return nil, err
 		}
-		laddr.Port = int(p.Port)
+		port = int(p.Port)
 	}
 
 	// Register this forward, using the port number we obtained.
-	ch := c.forwards.add(laddr)
+	ch := c.forwards.add(addr)
 
-	return &tcpListener{laddr, c, ch}, nil
+	return &tcpListener{addr, c, ch}, nil
 }
 
 // forwardList stores a mapping between remote
@@ -180,13 +215,14 @@ type forwardedTCPPayload struct {
 }
 
 // parseTCPAddr parses the originating address from the remote into a *net.TCPAddr.
-func parseTCPAddr(addr string, port uint32) (*net.TCPAddr, error) {
+func parseTCPAddr(addr string, port uint32) (net.Addr, error) {
 	if port == 0 || port > 65535 {
 		return nil, fmt.Errorf("ssh: port number out of range: %d", port)
 	}
 	ip := net.ParseIP(string(addr))
 	if ip == nil {
-		return nil, fmt.Errorf("ssh: cannot parse IP address %q", addr)
+		// TODO: check if allowed
+		return &tcpAddr{addr, int(port)}, nil
 	}
 	return &net.TCPAddr{IP: ip, Port: int(port)}, nil
 }
@@ -286,7 +322,7 @@ func (l *forwardList) forward(laddr, raddr net.Addr, ch NewChannel) bool {
 }
 
 type tcpListener struct {
-	laddr *net.TCPAddr
+	laddr net.Addr
 
 	conn *Client
 	in   <-chan forward
@@ -313,9 +349,17 @@ func (l *tcpListener) Accept() (net.Conn, error) {
 
 // Close closes the listener.
 func (l *tcpListener) Close() error {
+	host, portString, err := net.SplitHostPort(l.laddr.String())
+	if err != nil {
+		return err
+	}
+	port, err := strconv.ParseUint(portString, 10, 16)
+	if err != nil {
+		return err
+	}
 	m := channelForwardMsg{
-		l.laddr.IP.String(),
-		uint32(l.laddr.Port),
+		host,
+		uint32(port),
 	}
 
 	// this also closes the listener.
