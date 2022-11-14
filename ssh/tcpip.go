@@ -220,7 +220,7 @@ func parseTCPAddr(addr string, port uint32) (net.Addr, error) {
 	if port == 0 || port > 65535 {
 		return nil, fmt.Errorf("ssh: port number out of range: %d", port)
 	}
-	ip := net.ParseIP(string(addr))
+	ip := net.ParseIP(addr)
 	if ip == nil {
 		// TODO: check if allowed
 		return &tcpAddr{addr, int(port)}, nil
@@ -242,12 +242,6 @@ func (l *forwardList) handleChannels(in <-chan NewChannel) {
 				ch.Reject(ConnectionFailed, "could not parse forwarded-tcpip payload: "+err.Error())
 				continue
 			}
-
-			// RFC 4254 section 7.2 specifies that incoming
-			// addresses should list the address, in string
-			// format. It is implied that this should be an IP
-			// address, as it would be impossible to connect to it
-			// otherwise.
 			laddr, err = parseTCPAddr(payload.Addr, payload.Port)
 			if err != nil {
 				ch.Reject(ConnectionFailed, err.Error())
@@ -258,7 +252,6 @@ func (l *forwardList) handleChannels(in <-chan NewChannel) {
 				ch.Reject(ConnectionFailed, err.Error())
 				continue
 			}
-
 		case "forwarded-streamlocal@openssh.com":
 			var payload forwardedStreamLocalPayload
 			if err = Unmarshal(ch.ExtraData(), &payload); err != nil {
